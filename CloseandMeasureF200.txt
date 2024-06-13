@@ -1,0 +1,41 @@
+Public Function sleep(lSeconds)
+  Dim starttime, exittime, x
+  x = 0
+  starttime = timer
+  exittime = starttime + lSeconds
+  do while timer < exittime
+    x = x +1
+  loop
+End Function
+
+Dim OMagellan, oRdrOle, OInstrument, OWorkspaceOle
+'create Magellan COM object
+Set oMagellan = CreateObject("Magellan2.Application")
+'create readerserver via Magellan
+Set oRdrOle   = oMagellan.CreateRdrOleObject
+' configure instrument
+oRdrOle.InstrumentName = "Infinite Series"
+oRdrOle.DemoModeAllowed = FALSE
+oRdrOle.CommType = 0
+oRdrOle.PortNr = 0
+' create and set instrument object
+Set oInstrument = oRdrOle.CreateInstrumentObject
+oMagellan.InstrumentObject = oInstrument
+'create workspace object
+Set oWorkspace = oMagellan.CreateWorkspaceObject
+'Close Instrument
+OInstrument.MinTimeToShowWaitDlg = 0
+OInstrument.PlateInOut = "In"
+'configure workspace and insert method
+oWorkspace.Empty = True
+oWorkspace.InsertMethod("DSM_Robot203_Tecan")
+oWorkspace.FileName = oWorkspace.NextDefaultFileName
+'perform run
+oWorkspace.StartRun
+While oWorkspace.Status = 0 
+   sleep(1)
+Wend  
+'store workspace
+oWorkspace.Doserialization(True)
+'display results
+'oMagellan.EvaluateResults(oWorkspace.FileName)

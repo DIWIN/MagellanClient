@@ -1,0 +1,34 @@
+' Magellan Macro
+Dim OMagellanOle, ORdrOle, OInstrumentOle, OWorkspaceOle
+' create Magellan object
+Set OMagellanOle = CreateObject("Magellan2.Application")
+' get reader server object from Magellan
+Set ORdrOle = OMagellanOle.CreateRdrOleObject
+' specify the instrument to connect
+' instrument name
+ORdrOle.InstrumentName = "Infinite Series"
+' simulate instrument
+ORdrOle.CommType = 0
+' select COM port
+ORdrOle.PortNr = 0
+' create instrument object
+Set OInstrumentOle = ORdrOle.CreateInstrumentObject
+If OInstrumentOle Is Nothing Then
+   MsgBox "Failed to connect to instrument"
+Else
+   ' hide the status dialog when measuring
+   OInstrumentOle.MinTimeToShowWaitDlg = 0
+   
+ 
+   
+   OInstrumentOle.PlateInOut = "In"
+
+   Set FSO = CreateObject("Scripting.FileSystemObject")
+   Set MyFile = FSO.CreateTextFile("C:\Users\technical_support\Desktop\TecanFiles\Testdatei.txt ", True)
+   MyFile.Close
+    Set MyFile = FSO.OpenTextFile("C:\Users\technical_support\Desktop\TecanFiles\Testdatei.txt", 8)
+    MyFile.WriteLine ("Status:")
+    MyFile.WriteLine ("Close")
+   MyFile.Close
+ 
+End If
