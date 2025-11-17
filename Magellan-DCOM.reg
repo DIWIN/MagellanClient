@@ -1,0 +1,14 @@
+Windows Registry Editor Version 5.00
+
+; CLSID-Eintrag für Magellan COM-Server + AppID
+[HKEY_CLASSES_ROOT\WOW6432Node\CLSID\{C1DFFFB5-ECB8-4EFD-85AC-0A95F366C994}]
+"AppID"="{C1DFFFB5-ECB8-4EFD-85AC-0A95F366C994}"
+
+; AppID-Eintrag für DCOM-Konfiguration
+[HKEY_CLASSES_ROOT\AppID\{C1DFFFB5-ECB8-4EFD-85AC-0A95F366C994}]
+@="Magellan2 Application"
+"RunAs"="Interactive User"
+
+; Optional: Zuordnung über den EXE-Namen
+[HKEY_CLASSES_ROOT\AppID\Magellan.exe]
+"AppID"="{C1DFFFB5-ECB8-4EFD-85AC-0A95F366C994}"
