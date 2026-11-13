@@ -21,6 +21,25 @@ namespace MagellanClient
         string _Language = "";
         bool _StopFlag = false;
 
+        // ---------------------------------------------------------------------------------
+        // Connect workaround (support case China, 2026-11)
+        //
+        // Observed in the field: the first command to the reader ("QQ") is sometimes not
+        // answered (2 s timeout). With CommType = 1 Magellan then silently falls back to a
+        // simulation search, which may hang ("Searching instruments - Not responding").
+        //
+        // Workaround:
+        //  - Use CommType = 0 for real instruments (no fallback to simulation).
+        //  - If CreateInstrumentObject() returns null: release all COM objects cleanly
+        //    (no Process.Kill!), wait until Magellan has terminated by itself and try again
+        //    with a fresh Magellan instance.
+        // Set _UseConnectWorkaround = false to get the original behaviour.
+        // ---------------------------------------------------------------------------------
+        bool _UseConnectWorkaround = true;
+        const int ConnectMaxAttempts = 3;
+        const int MagellanExitTimeoutMs = 30000;  // max. wait until Magellan has terminated itself
+        const int DelayBeforeRetryMs = 5000;      // additional pause before the next attempt
+
         #endregion
 
         public Form1()
@@ -30,6 +49,11 @@ namespace MagellanClient
         }
 
         private void button_Create_Click(object sender, EventArgs e)
+        {
+            CreateMagellan();
+        }
+
+        private void CreateMagellan()
         {
             _iMagellan = new Magellan2.Application();
             Debug.Assert(_iMagellan != null);
@@ -50,6 +74,120 @@ namespace MagellanClient
             richTextBox_Output.AppendText("iReaderServer: ServerVersion = " + _iReaderServer.ServerVersion + "\n");
         }
 
+        /// <summary>
+        /// Connects to the instrument. With the workaround enabled, a failed connection is
+        /// retried with a fresh Magellan instance (after Magellan has shut down cleanly).
+        /// Returns true if an instrument object is available.
+        /// </summary>
+        private bool ConnectInstrument()
+        {
+            int maxAttempts = _UseConnectWorkaround ? ConnectMaxAttempts : 1;
+
+            for (int attempt = 1; attempt <= maxAttempts; attempt++)
+            {
+                if (_iMagellan == null)
+                {
+                    CreateMagellan();
+                }
+
+                richTextBox_Output.AppendText("Connect attempt " + attempt + "/" + maxAttempts + " (" + _DeviceName + ")\n");
+                _iReaderServer.InstrumentName = _DeviceName;
+                // Original: always 1 (try real instrument, fall back to simulation).
+                // Workaround: 0 for real instruments, so Magellan does not fall back to a
+                // simulation search when the reader does not answer the first time.
+                bool bSimulation = _DeviceName.IndexOf("Simulation", StringComparison.OrdinalIgnoreCase) >= 0;
+                _iReaderServer.CommType = (_UseConnectWorkaround && !bSimulation) ? 0 : 1;
+
+                _iInstrument = _iReaderServer.CreateInstrumentObject();
+                if ((_iInstrument as Object) != null)
+                {
+                    _iMagellan.InstrumentObject = _iInstrument;
+                    richTextBox_Output.AppendText("iInstrument: " + _iInstrument + "\n");
+                    richTextBox_Output.AppendText("iInstrument: InstrumentName = " + _iInstrument.InstrumentName + "\n");
+                    return true;
+                }
+
+                richTextBox_Output.AppendText("Connect attempt " + attempt + " failed (CreateInstrumentObject returned null)\n");
+                if (attempt < maxAttempts)
+                {
+                    // Do NOT reuse this Magellan instance and do NOT kill it:
+                    // release everything and let Magellan close the port and terminate itself.
+                    ReleaseMagellan();
+                    WaitForMagellanExit();
+                    richTextBox_Output.AppendText("Waiting " + (DelayBeforeRetryMs / 1000) + " s before next attempt ...\n");
+                    WaitWithMessagePump(DelayBeforeRetryMs);
+                }
+            }
+
+            richTextBox_Output.AppendText("Instrument could not be connected.\n");
+            return false;
+        }
+
+        /// <summary>
+        /// Releases all COM objects (each exactly once, dependent objects first).
+        /// Magellan then shuts itself down; it is never killed.
+        /// </summary>
+        private void ReleaseMagellan()
+        {
+            ReleaseComObject(_iWorkspace);
+            _iWorkspace = null;
+            ReleaseComObject(_iInstrument);
+            _iInstrument = null;
+            ReleaseComObject(_iReaderServer);
+            _iReaderServer = null;
+            ReleaseComObject(_iMagellan);
+            _iMagellan = null;
+
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            richTextBox_Output.AppendText("COM objects released\n");
+        }
+
+        private static void ReleaseComObject(object o)
+        {
+            if (o != null && Marshal.IsComObject(o))
+            {
+                Marshal.ReleaseComObject(o);
+            }
+        }
+
+        /// <summary>
+        /// Waits (with message pump) until no Magellan process is running any more,
+        /// at most MagellanExitTimeoutMs. Nothing is terminated forcibly.
+        /// </summary>
+        private void WaitForMagellanExit()
+        {
+            richTextBox_Output.AppendText("Waiting for Magellan to terminate ...\n");
+            Stopwatch sw = Stopwatch.StartNew();
+            while (sw.ElapsedMilliseconds < MagellanExitTimeoutMs)
+            {
+                Process[] procs = Process.GetProcessesByName("Magellan");
+                bool bRunning = procs.Length > 0;
+                foreach (Process p in procs)
+                {
+                    p.Dispose();
+                }
+                if (!bRunning)
+                {
+                    richTextBox_Output.AppendText("Magellan terminated after " + (sw.ElapsedMilliseconds / 1000.0).ToString("F1") + " s\n");
+                    return;
+                }
+                WaitWithMessagePump(250);
+            }
+            richTextBox_Output.AppendText("WARNING: Magellan still running after " + (MagellanExitTimeoutMs / 1000) + " s (not killed)\n");
+        }
+
+        private static void WaitWithMessagePump(int ms)
+        {
+            Stopwatch sw = Stopwatch.StartNew();
+            while (sw.ElapsedMilliseconds < ms)
+            {
+                Application.DoEvents();
+                Thread.Sleep(50);
+            }
+        }
+
         private void button_Name_Click(object sender, EventArgs e)
         {
             _DeviceName = comboBox_DeviceName.Text;
@@ -58,13 +196,10 @@ namespace MagellanClient
 
         private void button_Connect_Click(object sender, EventArgs e)
         {
-            _iReaderServer.InstrumentName = _DeviceName;    //"Sunrise"; //"Infinite Series";
-            _iReaderServer.CommType = 1; // 1 == Simulate
-            _iInstrument = _iReaderServer.CreateInstrumentObject();
-            Debug.Assert((_iInstrument as Object) != null);
-            _iMagellan.InstrumentObject = _iInstrument;
-            richTextBox_Output.AppendText("iInstrument: " + _iInstrument + "\n");
-            richTextBox_Output.AppendText("iInstrument: InstrumentName = " + _iInstrument.InstrumentName + "\n");
+            if (!ConnectInstrument())
+            {
+                return;
+            }
             _iInstrument.PlateInOut = "Out";
             richTextBox_Output.AppendText("iInstrument: Plate=" + _iInstrument.PlateInOut + "\n");
             _iWorkspace = _iMagellan.CreateWorkspaceObject();
@@ -86,9 +221,20 @@ namespace MagellanClient
             comboBox_Methods.Items.Clear();
             richTextBox_Output.Clear();
             richTextBox_Output.AppendText("Set back to Language: " + _Language + "\n");
-            _iMagellan.Language = _Language;
-            _iMagellan = null;
-            GC.Collect();
+            if (_iMagellan != null)
+            {
+                _iMagellan.Language = _Language;
+            }
+            if (_UseConnectWorkaround)
+            {
+                ReleaseMagellan();
+                WaitForMagellanExit();
+            }
+            else
+            {
+                _iMagellan = null;
+                GC.Collect();
+            }
         }
 
         private void button_AvailableMethods_Click(object sender, EventArgs e)
@@ -222,28 +368,44 @@ namespace MagellanClient
             //_iInstrument = null;
             //_iReaderServer = null;
 
-            _iMagellan = null; // Release Magellan application object
-            richTextBox_Output.AppendText("iWorkspace: StopRun --> objects destroyed\n");
-            // Wait 5 seconds for COM-object to be released
-            // Ok, the following method of "waiting" is ugly, but you can do better :-)
-            n = 50;
-            while (n > 0)
+            if (_UseConnectWorkaround)
             {
-                Application.DoEvents();
-                Thread.Sleep(100);
-                n--;
+                ReleaseMagellan();
+                richTextBox_Output.AppendText("iWorkspace: StopRun --> objects destroyed\n");
+                WaitForMagellanExit();
+                richTextBox_Output.AppendText("iWorkspace: StopRun --> create new magellan\n");
+                if (!ConnectInstrument())
+                {
+                    _StopFlag = false;
+                    return;
+                }
+                _iWorkspace = _iMagellan.CreateWorkspaceObject();
             }
-            GC.Collect(); // Collect the pieces and clean the memory
-            richTextBox_Output.AppendText("iWorkspace: StopRun --> create new magellan\n");
-            // Create everything new ...
-            _iMagellan = new Magellan2.Application();
-            // bool loginOk = _iMagellan.Login(textBox_Login.Text, textBox_Pwd.Text, 1);
-            _iReaderServer = _iMagellan.CreateRdrOleObject();
-            _iReaderServer.InstrumentName = _DeviceName;
-            _iReaderServer.CommType = 1; // 1 == Simulate
-            _iInstrument = _iReaderServer.CreateInstrumentObject();
-            _iMagellan.InstrumentObject = _iInstrument;
-            _iWorkspace = _iMagellan.CreateWorkspaceObject();
+            else
+            {
+                _iMagellan = null; // Release Magellan application object
+                richTextBox_Output.AppendText("iWorkspace: StopRun --> objects destroyed\n");
+                // Wait 5 seconds for COM-object to be released
+                // Ok, the following method of "waiting" is ugly, but you can do better :-)
+                n = 50;
+                while (n > 0)
+                {
+                    Application.DoEvents();
+                    Thread.Sleep(100);
+                    n--;
+                }
+                GC.Collect(); // Collect the pieces and clean the memory
+                richTextBox_Output.AppendText("iWorkspace: StopRun --> create new magellan\n");
+                // Create everything new ...
+                _iMagellan = new Magellan2.Application();
+                // bool loginOk = _iMagellan.Login(textBox_Login.Text, textBox_Pwd.Text, 1);
+                _iReaderServer = _iMagellan.CreateRdrOleObject();
+                _iReaderServer.InstrumentName = _DeviceName;
+                _iReaderServer.CommType = 1; // 1 == Simulate
+                _iInstrument = _iReaderServer.CreateInstrumentObject();
+                _iMagellan.InstrumentObject = _iInstrument;
+                _iWorkspace = _iMagellan.CreateWorkspaceObject();
+            }
             // Ok, ready to proceed
             richTextBox_Output.AppendText("iWorkspace: StopRun --> Finished\n");
 
